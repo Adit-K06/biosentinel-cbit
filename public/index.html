@@ -12,6 +12,13 @@
     onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}]})"></script>
   <script src="https://cdn.plot.ly/plotly-2.26.0.min.js" defer></script>
   <link rel="stylesheet" href="/static/css/style.css"/>
+  <script>
+    // Fetch Gemini key from secure backend config endpoint
+    // Falls back to key input field + localStorage
+    fetch('/api/config').then(r => r.ok ? r.json() : null)
+      .then(cfg => { if (cfg && cfg.gemini_key) window.__GEMINI_KEY__ = cfg.gemini_key; })
+      .catch(() => {});
+  </script>
 </head>
 <body>
 

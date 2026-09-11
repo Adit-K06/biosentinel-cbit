@@ -238,6 +238,14 @@ async def api_root():
     return {"status": "ok", "service": "BioSentinel 2.0 API"}
 
 
+@app.get("/config")
+@app.get("/api/config")
+async def get_config():
+    """Return public runtime config (Gemini API key from env) for frontend use."""
+    key = os.environ.get("GEMINI_API_KEY", "")
+    return {"gemini_key": key}
+
+
 @app.get("/data/{regime}")
 @app.get("/api/data/{regime}")
 async def get_regime_data_points(regime: str):

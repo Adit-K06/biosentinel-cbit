@@ -13,5 +13,8 @@
       "source": "/openapi.json",
       "destination": "/api"
     }
-  ]
+  ],
+  "env": {
+    "GEMINI_API_KEY": "@gemini-api-key"
+  }
 }

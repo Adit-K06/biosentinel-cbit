@@ -19,11 +19,16 @@ const S = {
 
 async function apiFetch(path, options = {}) {
   const clean = path.startsWith("/") ? path : `/${path}`;
-  try {
-    const res = await fetch(`/api${clean}`, options);
-    if (res.ok) return res;
-  } catch (e) {}
-  return fetch(clean, options);
+  // Try /api prefix first, then bare path
+  for (const url of [`/api${clean}`, clean]) {
+    try {
+      const res = await fetch(url, options);
+      const ct = res.headers.get('content-type') || '';
+      // Only accept JSON responses; HTML means Vercel returned an error page
+      if (res.ok && (ct.includes('json') || ct.includes('octet'))) return res;
+    } catch (e) {}
+  }
+  throw new Error('API unavailable — serverless function did not return JSON');
 }
 
 // Plotly dark template shared across all charts
@@ -254,10 +259,15 @@ function startStream(startIdx = 0) {
     return;
   }
 
-  // 2. Fetch pre-computed simulation points from Edge CDN (instant ~5ms), fallback to API
+  // 2. Fetch pre-computed simulation points from Edge CDN
   fetch(`/sim-${S.regime}.json`)
-    .then(r => {
-      if (!r.ok) return apiFetch(`/data/${S.regime}`).then(res => res.json());
+    .then(async r => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const ct = r.headers.get('content-type') || '';
+      if (!ct.includes('json') && !ct.includes('octet')) {
+        const text = await r.text();
+        throw new Error('Not JSON: ' + text.slice(0, 60));
+      }
       return r.json();
     })
     .then(data => {
@@ -267,11 +277,19 @@ function startStream(startIdx = 0) {
           playFromPoints(data.points, startIdx);
         }
       } else {
-        fallbackToSSE(startIdx);
+        console.error('Simulation data empty');
+        stopStream(false);
+        const btn = document.getElementById('btn-play');
+        if (btn) btn.textContent = '▶ Run';
       }
     })
-    .catch(() => {
-      fallbackToSSE(startIdx);
+    .catch(err => {
+      console.error('Sim fetch failed:', err);
+      stopStream(false);
+      const btn = document.getElementById('btn-play');
+      if (btn) btn.textContent = '▶ Run';
+      const banner = document.getElementById('banner-regime');
+      if (banner) banner.textContent = 'Data load error — refresh page';
     });
 }
 
@@ -580,16 +598,11 @@ async function loadCounterfactual() {
   if (!tbody) return;
 
   try {
-    let data;
-    try {
-      const resStatic = await fetch(`/cf-${S.regime}.json`);
-      if (resStatic.ok) data = await resStatic.json();
-    } catch (e) {}
-
-    if (!data) {
-      const res = await apiFetch(`/counterfactual/${S.regime}`);
-      data = await res.json();
-    }
+    const resStatic = await fetch(`/cf-${S.regime}.json`);
+    if (!resStatic.ok) throw new Error(`HTTP ${resStatic.status}`);
+    const ct = resStatic.headers.get('content-type') || '';
+    if (!ct.includes('json') && !ct.includes('octet')) throw new Error('Not JSON');
+    const data = await resStatic.json();
     loading.classList.add("hidden");
     table.classList.remove("hidden");
 
@@ -615,7 +628,8 @@ async function loadCounterfactual() {
         &nbsp;|&nbsp; Gain vs no-action: ${top.gain > 0 ? "+" : ""}${top.gain}%`;
     }
   } catch(e) {
-    loading.textContent = "Failed to load counterfactuals.";
+    console.error('Counterfactual fetch failed:', e);
+    loading.textContent = "Counterfactual data unavailable.";
   }
 }
 
@@ -706,47 +720,155 @@ function formatExplanation(rawText, model, source) {
   return html;
 }
 
-// ── Gemini explanation ────────────────────────────────────────────────────────
+// ── Gemini explanation (direct browser → Gemini REST API) ─────────────────────
+// API key is stored in localStorage (never committed to git)
+const DEFAULT_GEMINI_KEY = window.__GEMINI_KEY__ || localStorage.getItem('biosentinel_gemini_key') || '';
+
+function cleanLLMText(t) {
+  if (!t) return "";
+  t = t.replace(/\\text\{([^}]*)\}/g, '$1');
+  t = t.replace(/\\math\w+\{([^}]*)\}/g, '$1');
+  t = t.replace(/\\mu/g, 'μ');
+  t = t.replace(/\$([^$]+)\$/g, '$1').replace(/\$/g, '');
+  t = t.replace(/\\/g, '');
+  t = t.replace(/[ \t]+/g, ' ');
+  return t.trim();
+}
+
+function buildExpertFallback(d, regime) {
+  const DO = d?.DO ?? 0, RQ = d?.RQ ?? 1, OUR = d?.OUR ?? 0;
+  const CER = d?.CER ?? 0, X = d?.X ?? 0, Ss = d?.S ?? 0;
+  const R = d?.R ?? 100, diw = d?.diw ?? 999;
+  const diwStr = diw < 900 ? `${diw} min` : 'Safe (>15h)';
+  let bio, root, conseq, action;
+  if (regime === 'kLa_Limitation') {
+    bio    = `Severe oxygen transfer limitation. DO = ${DO.toFixed(2)} mg/L (hypoxia, below aerobic floor). RQ = ${RQ.toFixed(2)} confirms anaerobic overflow metabolic shift in X = ${X.toFixed(2)} g/L biomass.`;
+    root   = `kLa mass transfer degradation — impaired agitator power or sparger fouling. Cellular OUR = ${OUR.toFixed(3)} g/L/h exceeds oxygen transfer capacity.`;
+    conseq = `Batch recoverability R(t) = ${R.toFixed(1)}%. PNR (10%) reached in ~${diwStr}. Toxic byproducts (acetate/ethanol) will permanently suppress product titer.`;
+    action = 'Execute +150 RPM via SCADA immediately to boost kLa by ~20%. Inspect sparger pressure and increase air enrichment.';
+  } else if (regime === 'Substrate_Overfeeding') {
+    bio    = `Substrate overflow (S = ${Ss.toFixed(2)} g/L >> Ks = 0.1 g/L). Overflow metabolism; DO = ${DO.toFixed(2)} mg/L consumed faster than aeration transfer.`;
+    root   = `Feed rate exceeds cellular oxidative capacity. OUR = ${OUR.toFixed(3)} g/L/h overwhelms kLa, inducing Crabtree-like byproduct generation.`;
+    conseq = `Yield collapse within ${diwStr} (R = ${R.toFixed(1)}%). Acetate accumulation will cause irreversible cell death cascade.`;
+    action = 'Trim feed rate by 30% immediately. Hold feed until S < 1.0 g/L, then resume at controlled rate. Target RQ < 1.05.';
+  } else if (regime === 'Contamination') {
+    bio    = `Exogenous microbial contamination. RQ = ${RQ.toFixed(2)} diverges sharply from aerobic baseline (1.00). CER/OUR ratio decoupled from host strain stoichiometry.`;
+    root   = 'Foreign contaminant competing for carbon substrate with elevated respiration kinetics. Likely breach in sterile air boundary or feed line.';
+    conseq = `Complete batch loss within 2–3 hours. PNR in ~${diwStr} (R = ${R.toFixed(1)}%). Regulatory compliance breached; product stream contaminated.`;
+    action = 'Initiate immediate reactor isolation. Draw sterile broth sample for qPCR. Abort feed addition and prepare containment protocol.';
+  } else {
+    bio    = `Culture healthy and thriving. DO = ${DO.toFixed(2)} mg/L within nominal aerobic envelope. RQ = ${RQ.toFixed(2)} confirms balanced oxidative respiration. R(t) = ${R.toFixed(1)}%.`;
+    root   = 'Nominal dual-Monod kinetics — oxygen mass transfer matches cellular metabolic demand. All physiological states within safe envelope.';
+    conseq = 'Batch will continue healthy exponential and fed-batch trajectory. Recoverability remains stable at 100%.';
+    action = 'Maintain current setpoints (RPM, feed rate, aeration). Continue automated BioSentinel real-time surveillance.';
+  }
+  return (
+    `• BIOLOGICAL STATE: ${bio}\n\n` +
+    `• ROOT CAUSE: ${root}\n\n` +
+    `• CONSEQUENCE: ${conseq}\n\n` +
+    `• OPERATOR ACTION: ${action}\n\n` +
+    `*(BioSentinel Expert Engine — Physics-Grounded Real-time Analysis)*`
+  );
+}
+
+async function callGeminiDirect(apiKey, prompt) {
+  const models = [
+    'gemini-2.5-flash',
+    'gemini-1.5-flash',
+    'gemini-1.5-flash-latest',
+    'gemini-pro',
+  ];
+  const base = 'https://generativelanguage.googleapis.com/v1beta/models';
+  for (const model of models) {
+    try {
+      const res = await fetch(`${base}/${model}:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          contents: [{parts: [{text: prompt}]}],
+          generationConfig: {temperature: 0.4, maxOutputTokens: 1024},
+        }),
+      });
+      if (!res.ok) continue;
+      const j = await res.json();
+      const text = j?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (text) return {text: cleanLLMText(text), model, source: 'Gemini AI'};
+    } catch (e) { continue; }
+  }
+  return null;
+}
+
 async function getExplanation() {
   const d   = S.lastData;
-  const box = document.getElementById("explain-box");
-  const txt = document.getElementById("explain-text");
-  const btn = document.getElementById("btn-explain");
+  const box = document.getElementById('explain-box');
+  const txt = document.getElementById('explain-text');
+  const btn = document.getElementById('btn-explain');
   if (!box || !txt) return;
 
-  box.classList.remove("hidden");
+  box.classList.remove('hidden');
   txt.innerHTML = '<div style="color:var(--muted);font-size:0.85rem;padding:8px 0;">⚡ Consulting Gemini AI for real-time bioprocess diagnostics…</div>';
-  btn.disabled    = true;
+  btn.disabled = true;
 
-  const key = document.getElementById("gemini-key").value.trim();
-  const conf = d ? (d.probs[d.pred || S.regime] || 0) * 100 : 0;
+  const keyInput = document.getElementById('gemini-key');
+  // Restore saved key on first use, then save when used
+  const savedKey = localStorage.getItem('biosentinel_gemini_key') || '';
+  if (keyInput && !keyInput.value && savedKey) keyInput.value = savedKey;
+  const apiKey = (keyInput && keyInput.value.trim()) || DEFAULT_GEMINI_KEY;
+  if (apiKey && keyInput) localStorage.setItem('biosentinel_gemini_key', apiKey);
+  const regime   = S.regime;
+  const pred     = d?.pred ?? regime;
+  const conf     = d ? ((d.probs?.[pred] || 0) * 100) : 0;
+  const DO = d?.DO ?? 0, RQ = d?.RQ ?? 1, OUR = d?.OUR ?? 0;
+  const CER = d?.CER ?? 0, X = d?.X ?? 0, Ss = d?.S ?? 0;
+  const R = d?.R ?? 100, diw = d?.diw ?? 999;
+  const diwStr = diw < 900 ? `${diw} min` : 'Safe (>15h)';
+  const isHealthy = pred === 'Healthy';
+  const statusDesc = isHealthy
+    ? 'NOMINAL OPERATION — Culture is flourishing inside optimal physiological envelope.'
+    : `FAULT DETECTED — Culture experiencing ${pred}.`;
 
-  const body = {
-    regime: S.regime,
-    t:    d?.t    ?? 0,
-    DO:   d?.DO   ?? 0,
-    RQ:   d?.RQ   ?? 1,
-    OUR:  d?.OUR  ?? 0,
-    CER:  d?.CER  ?? 0,
-    X:    d?.X    ?? 0,
-    S:    d?.S    ?? 0,
-    R:    d?.R    ?? 100,
-    diw:  d?.diw  ?? 999,
-    pred: d?.pred ?? S.regime,
-    conf: conf,
-    key:  key,
-  };
+  const prompt = `You are BioSentinel AI — a Senior Industrial Bioprocess Engineer monitoring a stirred-tank bioreactor.
+
+CURRENT TELEMETRY (t = ${(d?.t ?? 0).toFixed(2)} h in a 24.0 h batch):
+• Dissolved Oxygen (DO): ${DO.toFixed(2)} mg/L (Aerobic baseline: 4.0–8.0 mg/L; critical hypoxia floor: 2.0 mg/L)
+• Respiratory Quotient (RQ): ${RQ.toFixed(2)} (Stoichiometric oxidative baseline: 1.00 ± 0.05)
+• Oxygen Uptake Rate (OUR): ${OUR.toFixed(3)} g/L/h
+• CO2 Evolution Rate (CER): ${CER.toFixed(3)} g/L/h
+• Biomass Density (X): ${X.toFixed(2)} g/L
+• Substrate Concentration (S): ${Ss.toFixed(2)} g/L
+• Batch Recoverability R(t): ${R.toFixed(1)}% (Healthy: 100%; Point-of-No-Return: 10%)
+• Decision Intervention Window (DIW): ${diwStr} remaining
+
+CLASSIFIER DIAGNOSIS:
+State: ${pred} (${conf.toFixed(0)}% confidence)
+Status: ${statusDesc}
+
+TASK:
+Provide an expert, authoritative, 4-point bioprocess engineering assessment.
+
+FORMATTING REQUIREMENTS (CRITICAL):
+1. Output EXACTLY these four bullet headings:
+• BIOLOGICAL STATE: <concise paragraph on cell physiology, metabolic pathway, and viability>
+• ROOT CAUSE: <mechanistic driver of this condition, physics, and mass transfer balance>
+• CONSEQUENCE: <impact in next 2–3 hours if current trajectory continues without intervention>
+• OPERATOR ACTION: <concrete SCADA / actuator corrective actions (RPM, feed, airflow, sampling)>
+
+2. ZERO LATEX: DO NOT use LaTeX formatting, math mode, backslashes, or dollar signs ($...$).
+3. Write clean, standard industrial units (e.g. X = ${X.toFixed(2)} g/L, DO = ${DO.toFixed(2)} mg/L, RQ = ${RQ.toFixed(2)}).
+4. No Markdown headers (#), no conversational preamble, no conversational signoff.`;
 
   try {
-    const res  = await apiFetch("/explain", {
-      method: "POST",
-      headers: {"Content-Type":"application/json"},
-      body: JSON.stringify(body),
-    });
-    const data = await res.json();
-    txt.innerHTML = formatExplanation(data.text, data.model, data.source);
-  } catch(e) {
-    txt.innerHTML = `<div class="exp-card exp-cons"><div class="exp-card-body">Network error: ${escapeHtml(e.message)}</div></div>`;
+    const result = await callGeminiDirect(apiKey, prompt);
+    if (result) {
+      txt.innerHTML = formatExplanation(result.text, result.model, result.source);
+    } else {
+      // Deterministic expert fallback if Gemini is unreachable
+      const fallbackText = buildExpertFallback(d, regime);
+      txt.innerHTML = formatExplanation(fallbackText, 'BioSentinel Expert Engine', 'Expert System');
+    }
+  } catch (e) {
+    const fallbackText = buildExpertFallback(d, regime);
+    txt.innerHTML = formatExplanation(fallbackText, 'BioSentinel Expert Engine', 'Expert System');
   } finally {
     btn.disabled = false;
   }
@@ -758,16 +880,11 @@ let _metricsLoaded = false;
 async function loadMetrics() {
   if (_metricsLoaded) return;
   try {
-    let meta;
-    try {
-      const resStatic = await fetch("/metrics.json");
-      if (resStatic.ok) meta = await resStatic.json();
-    } catch (e) {}
-
-    if (!meta) {
-      const res = await apiFetch("/metrics");
-      meta = await res.json();
-    }
+    const resStatic = await fetch("/metrics.json");
+    if (!resStatic.ok) throw new Error(`HTTP ${resStatic.status}`);
+    const ct = resStatic.headers.get('content-type') || '';
+    if (!ct.includes('json') && !ct.includes('octet')) throw new Error('Not JSON');
+    const meta = await resStatic.json();
     _metricsLoaded = true;
     renderF1Chart(meta);
     renderCMChart(meta);
