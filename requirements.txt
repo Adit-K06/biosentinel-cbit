@@ -1,12 +1,9 @@
-# BioSentinel 2.0 — Python dependencies
+# BioSentinel 2.0 — Production dependencies
 scipy
 numpy
 pandas
 lightgbm
-joblib
-scikit-learn
-plotly
 fastapi
-uvicorn[standard]
+uvicorn
 google-generativeai
 python-dotenv

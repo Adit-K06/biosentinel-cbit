@@ -58,6 +58,24 @@ _FEATURE_COLS_PATH = _MODELS_DIR / "feature_cols.json"
 # ---------------------------------------------------------------------------
 
 
+class LightGBMBoosterWrapper:
+    """Lightweight wrapper around native lightgbm.Booster for sklearn-like API."""
+    def __init__(self, booster: Any):
+        self.booster = booster
+        self.classes_ = CLASSES
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        return self.booster.predict(X)
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        proba = self.predict_proba(X)
+        return np.argmax(proba, axis=1)
+
+    @property
+    def feature_importances_(self) -> np.ndarray:
+        return self.booster.feature_importance()
+
+
 def load_model(
     model_path:  Union[str, Path] = _MODEL_PATH,
     cols_path:   Union[str, Path] = _FEATURE_COLS_PATH,
@@ -67,32 +85,43 @@ def load_model(
     Parameters
     ----------
     model_path : path-like
-        Path to the joblib-serialised LightGBM model.
+        Path to the joblib-serialised or text-serialised LightGBM model.
     cols_path : path-like
         Path to the JSON file listing expected feature column names.
 
     Returns
     -------
     (model, feature_cols, classes) : tuple
-        model        — fitted LGBMClassifier
+        model        — fitted LGBMClassifier or LightGBMBoosterWrapper
         feature_cols — ordered list of feature column names
         classes      — ordered list of class label strings
     """
     model_path = Path(model_path)
     cols_path  = Path(cols_path)
+    txt_path   = model_path.with_suffix(".txt")
 
-    if not model_path.exists():
-        raise FileNotFoundError(
-            f"Model file not found: {model_path}\n"
-            "Run `python src/train_model.py` first to train and save the model."
-        )
     if not cols_path.exists():
         raise FileNotFoundError(
             f"Feature columns file not found: {cols_path}\n"
             "Run `python src/train_model.py` first."
         )
 
-    model = joblib.load(model_path)
+    # Prefer lightweight native Booster (.txt) if present to avoid scikit-learn bundle bloat
+    if txt_path.exists():
+        import lightgbm as lgb
+        booster = lgb.Booster(model_file=str(txt_path))
+        model = LightGBMBoosterWrapper(booster)
+    elif model_path.exists():
+        try:
+            model = joblib.load(model_path)
+        except Exception:
+            raise FileNotFoundError(f"Failed to load model from {model_path}")
+    else:
+        raise FileNotFoundError(
+            f"Model file not found at {txt_path} or {model_path}\n"
+            "Run `python src/train_model.py` first to train and save the model."
+        )
+
     with open(cols_path, "r") as f:
         feature_cols = json.load(f)
 

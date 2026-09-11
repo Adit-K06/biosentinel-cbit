@@ -9,7 +9,8 @@ tests/
 .streamlit/
 app.py
 generate_pitch_pdf.py
-data/synthetic/
+data/
 .coverage
 htmlcov/
 *.log
+*.pkl

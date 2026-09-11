@@ -2,7 +2,7 @@
   "version": 2,
   "functions": {
     "api/index.py": {
-      "includeFiles": "frontend/**,models/**,src/**,data/**,BioSentinel_Pitch_Summary.pdf",
+      "includeFiles": "frontend/**,models/**,src/**,BioSentinel_Pitch_Summary.pdf",
       "maxDuration": 60
     }
   },
