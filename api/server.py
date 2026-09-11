@@ -32,8 +32,14 @@ from starlette.concurrency import run_in_threadpool
 
 load_dotenv()
 
-_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_ROOT))
+_CURR_DIR = Path(__file__).resolve().parent
+_ROOT = _CURR_DIR.parent
+for _cand in [_ROOT, _CURR_DIR, Path.cwd(), Path.cwd().parent]:
+    if (_cand / "src").exists():
+        _ROOT = _cand
+        break
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 from src.config import DEFAULT_PARAMS
 from src.counterfactual import rank_interventions
@@ -180,7 +186,10 @@ def _warm_cache():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Warm cache in background thread so server starts accepting connections immediately
-    await run_in_threadpool(_warm_cache)
+    try:
+        await run_in_threadpool(_warm_cache)
+    except Exception as exc:
+        print(f"[BioSentinel] Background warmup notice: {exc}")
     yield
 
 
@@ -190,8 +199,14 @@ app.add_middleware(
     allow_methods=["*"], allow_headers=["*"],
 )
 
-_FRONTEND = _ROOT / "frontend"
-app.mount("/static", StaticFiles(directory=str(_FRONTEND)), name="static")
+_FRONTEND = None
+for _cand in [_ROOT / "frontend", Path.cwd() / "frontend", _CURR_DIR / "frontend"]:
+    if _cand.exists():
+        _FRONTEND = _cand
+        break
+
+if _FRONTEND is not None and _FRONTEND.exists():
+    app.mount("/static", StaticFiles(directory=str(_FRONTEND)), name="static")
 
 # ── Helper accessors ──────────────────────────────────────────────────────────
 def _get_model():
@@ -223,7 +238,12 @@ def _get_regime_data(regime: str) -> dict:
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    return HTMLResponse((_FRONTEND / "index.html").read_text(encoding="utf-8"))
+    if _FRONTEND is not None and (_FRONTEND / "index.html").exists():
+        return HTMLResponse((_FRONTEND / "index.html").read_text(encoding="utf-8"))
+    for cand in [Path.cwd() / "frontend", _ROOT / "frontend", Path(__file__).resolve().parent / "frontend"]:
+        if (cand / "index.html").exists():
+            return HTMLResponse((cand / "index.html").read_text(encoding="utf-8"))
+    return HTMLResponse("<h1>BioSentinel 2.0 API is Live</h1><p>Visit <a href='/docs'>/docs</a> for API documentation.</p>")
 
 
 @app.get("/BioSentinel_Pitch_Summary.pdf")
