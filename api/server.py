@@ -232,6 +232,12 @@ async def pitch_pdf():
 
 
 
+@app.get("/api")
+@app.get("/api/")
+async def api_root():
+    return {"status": "ok", "service": "BioSentinel 2.0 API"}
+
+
 @app.get("/data/{regime}")
 @app.get("/api/data/{regime}")
 async def get_regime_data_points(regime: str):

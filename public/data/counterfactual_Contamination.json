@@ -1,0 +1,30 @@
+[
+  {
+    "rank": 1,
+    "label": "TRIGGER CIP / HARVEST ABORT",
+    "ending_R": 0.0,
+    "gain": 0.0,
+    "pnr": true
+  },
+  {
+    "rank": 2,
+    "label": "Containment & Autoclave Decontamination",
+    "ending_R": 0.0,
+    "gain": 0.0,
+    "pnr": true
+  },
+  {
+    "rank": 3,
+    "label": "Physical Actuation (+RPM/-Feed) [INEFFECTIVE]",
+    "ending_R": 0.0,
+    "gain": 0.0,
+    "pnr": true
+  },
+  {
+    "rank": 4,
+    "label": "No Action (Culture Lost / PNR Breached)",
+    "ending_R": 0.0,
+    "gain": 0.0,
+    "pnr": true
+  }
+]

@@ -254,9 +254,12 @@ function startStream(startIdx = 0) {
     return;
   }
 
-  // 2. Fetch full simulation points via fast batch JSON endpoint
-  apiFetch(`/data/${S.regime}`)
-    .then(r => r.json())
+  // 2. Fetch pre-computed simulation points from Edge CDN (instant ~5ms), fallback to API
+  fetch(`/data/${S.regime}.json`)
+    .then(r => {
+      if (!r.ok) return apiFetch(`/data/${S.regime}`).then(res => res.json());
+      return r.json();
+    })
     .then(data => {
       if (data && data.points && data.points.length > 0) {
         S.cachedPoints[S.regime] = data.points;
@@ -577,8 +580,16 @@ async function loadCounterfactual() {
   if (!tbody) return;
 
   try {
-    const res  = await apiFetch(`/counterfactual/${S.regime}`);
-    const data = await res.json();
+    let data;
+    try {
+      const resStatic = await fetch(`/data/counterfactual_${S.regime}.json`);
+      if (resStatic.ok) data = await resStatic.json();
+    } catch (e) {}
+
+    if (!data) {
+      const res = await apiFetch(`/counterfactual/${S.regime}`);
+      data = await res.json();
+    }
     loading.classList.add("hidden");
     table.classList.remove("hidden");
 
@@ -747,8 +758,16 @@ let _metricsLoaded = false;
 async function loadMetrics() {
   if (_metricsLoaded) return;
   try {
-    const res  = await apiFetch("/metrics");
-    const meta = await res.json();
+    let meta;
+    try {
+      const resStatic = await fetch("/data/metrics.json");
+      if (resStatic.ok) meta = await resStatic.json();
+    } catch (e) {}
+
+    if (!meta) {
+      const res = await apiFetch("/metrics");
+      meta = await res.json();
+    }
     _metricsLoaded = true;
     renderF1Chart(meta);
     renderCMChart(meta);
