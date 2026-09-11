@@ -102,26 +102,24 @@ REGIME_OVERRIDES: Dict[str, Dict[str, Any]] = {
 
 STRESS_PARAMS = {
     # --- Stress sensitivity coefficients (Eq. 14) ---
-    # λ = k_stress * |pH_opt - pH(t)| + k_O2 * |C_crit - CL|
+    # λ(t) = k_stress * |pH_opt - pH(t)| + k_O2 * max(C_crit - CL(t), 0)
     #
-    # The PDF specifies these as tunable constants; the numeric values below
-    # are HACKATHON IMPLEMENTATION ASSUMPTIONS — not biologically validated.
-    "k_stress": 1.0,       # h⁻¹  stress weight for pH deviation
-    "k_O2":     200.0,     # h⁻¹·(g/L)⁻¹  stress weight for DO deviation
-    "pH_opt":   7.0,       # dimensionless  optimal pH (assumption: neutral)
-    # C_crit is the nominal healthy operating DO (≈ 7 mg/L = 0.007 g/L).
-    # Stress = k_O2 * |C_crit - CL|, so stress ≈ 0 at healthy DO and rises
-    # when DO sags below nominal during a fault.
-    # HACKATHON IMPLEMENTATION ASSUMPTION (set to match simulator healthy DO).
-    "C_crit":   0.0070,    # g/L  nominal healthy dissolved oxygen target
+    # One-sided DO penalty: only stress accumulates when DO falls BELOW C_crit.
+    # Healthy DO >= C_crit → zero O2 stress → R(t) stays near 100%.
+    # Fault DO sags to ~0.001 g/L: lambda ~ 30 * 0.006 = 0.18 h⁻¹
+    # After 10h of severe fault: R = exp(-1.8) ~ 17% — clearly alarming.
+    "k_stress": 0.0,       # h⁻¹  pH stress weight (pH not modelled → 0)
+    "k_O2":     30.0,      # h⁻¹·(g/L)⁻¹  one-sided DO-deficit stress weight
+    "pH_opt":   7.0,       # dimensionless  optimal pH
+    # C_crit: critical minimum healthy DO (≈ 7 mg/L). Below this → stress accumulates.
+    "C_crit":   0.0070,    # g/L  critical dissolved oxygen threshold
 
     # --- Recoverability thresholds (Eq. 15) ---
-    # R(t) = exp(-∫λ dt) ∈ (0, 1]
+    # R(t) = exp(−∫₀ᵗ λ(τ) dτ) ∈ (0, 1]
     #
     # PNR: Point of No Return — R drops below this → batch deemed unrecoverable.
-    # Chosen as 0.20 (20 %) for the demo.
-    # HACKATHON IMPLEMENTATION ASSUMPTION.
-    "R_pnr":    0.20,
+    # Set to 0.10 (10%) to match the formulas shown in the UI Reference tab.
+    "R_pnr":    0.10,
 
     # DIW: Decision Intervention Window — hours remaining before R hits R_pnr
     # given the current instantaneous stress rate.

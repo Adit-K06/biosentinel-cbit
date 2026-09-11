@@ -350,4 +350,8 @@ def simulate_batch(
     for col in ["DO", "OUR", "CER", "OD600", "X", "S", "RPM", "airflow", "pressure"]:
         df[col] = df[col].clip(lower=0.0)
 
+    # Ensure strictly sorted timestamp without duplicate rows (prevents Plotly loopback glitches)
+    df = df.sort_values(by="timestamp").drop_duplicates(subset=["timestamp"]).reset_index(drop=True)
+
     return df
+

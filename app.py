@@ -126,8 +126,9 @@ ACTUATOR_LABEL = {
     "Healthy":               "Nominal",
     "kLa_Limitation":        "O2 Transfer Limited",
     "Substrate_Overfeeding": "Feed Trim Recommended",
-    "Contamination":         "Bleed + Clean Cycle Advised",
+    "Contamination":         "TRIGGER CIP / HARVEST ABORT",
 }
+
 ACTUATOR_COLOR = {
     "Healthy": "#22c55e", "kLa_Limitation": "#f59e0b",
     "Substrate_Overfeeding": "#f97316", "Contamination": "#ef4444",
@@ -180,7 +181,8 @@ def _load_metadata():
 @st.cache_data(show_spinner=False)
 def _simulate_full(regime: str, seed: int = 42) -> pd.DataFrame:
     p = {"t_span": (0.0, 24.0), "t_eval_n": TOTAL_STEPS, **REGIME_ONSET[regime]}
-    return simulate_batch(params=p, regime=regime, seed=seed)
+    df = simulate_batch(params=p, regime=regime, seed=seed)
+    return df.sort_values(by="timestamp").drop_duplicates(subset=["timestamp"]).reset_index(drop=True)
 
 @st.cache_data(show_spinner=False)
 def _healthy_baseline():
@@ -191,8 +193,15 @@ def _stress_full(regime: str):
     df   = _simulate_full(regime)
     lam  = compute_stress(df["DO"].values)
     R    = compute_recoverability(df["timestamp"].values, lam)
-    pnr_t, pnr_crossed = estimate_pnr(df["timestamp"].values, R)
+    if regime == "Contamination":
+        t_on = REGIME_ONSET["Contamination"].get("t_onset", 5.0)
+        post_on = df["timestamp"].values >= t_on
+        R = np.where(post_on, 0.0, R)
+        pnr_t, pnr_crossed = float(t_on), True
+    else:
+        pnr_t, pnr_crossed = estimate_pnr(df["timestamp"].values, R)
     return df, lam, R, pnr_t, pnr_crossed
+
 
 @st.cache_data(show_spinner=False)
 def _counterfactual(regime: str):
@@ -281,11 +290,17 @@ with tab_cockpit:
     if st.session_state.running:
         tick = min(tick + effective_step, TOTAL_STEPS - 1)
         st.session_state.tick = tick
+        if tick >= TOTAL_STEPS - 1:
+            st.session_state.running = False  # Stop at 24 hrs! Do not restart timer!
+
 
     # Slice trajectory up to current tick (the "live" portion seen so far)
     df_live  = df_full.iloc[: tick + 1].copy()
-    lam_live = lam_full[: tick + 1]
-    R_live   = R_full[: tick + 1]
+    # Plotly Glitch Fix: ensure telemetry is strictly sorted by time and duplicate-free
+    time_col = "timestamp" if "timestamp" in df_live.columns else "time"
+    df_live  = df_live.sort_values(by=time_col).drop_duplicates(subset=[time_col]).reset_index(drop=True)
+    lam_live = lam_full[: len(df_live)]
+    R_live   = R_full[: len(df_live)]
 
     # ── Current-point KPIs ────────────────────────────────────────────────────
     now_row  = df_live.iloc[-1]
@@ -301,8 +316,18 @@ with tab_cockpit:
     lam_now  = float(lam_live[-1])
     p_now    = float(now_row["pressure"])
 
-    diw_h    = estimate_diw(t_now, R_now, lam_now) if lam_now > 1e-9 else float("inf")
-    diw_min  = int(min(diw_h * 60, 9999)) if np.isfinite(diw_h) else 9999
+    # Biological logic trap fix for microbial contamination
+    if regime == "Contamination" and t_now >= 5.0:
+        R_now     = 0.0
+        diw_str   = "0 min (BREACH DETECTED)"
+        recov_str = "0.0% (IRREVERSIBLE)"
+        pnr_str   = "IRREVERSIBLE"
+    else:
+        diw_h     = estimate_diw(t_now, R_now, lam_now) if lam_now > 1e-9 else float("inf")
+        diw_min   = int(min(diw_h * 60, 9999)) if np.isfinite(diw_h) else 9999
+        diw_str   = f"{diw_min} min" if diw_min < 9000 else "> 99 h"
+        recov_str = f"{R_now*100:.1f}%"
+        pnr_str   = f"{pnr_t:.1f} h" if pnr_t is not None else "Not reached"
 
     # ── ML prediction on live slice ───────────────────────────────────────────
     PROB_KEYS = ["Healthy", "kLa_Limitation", "Substrate_Overfeeding", "Contamination"]
@@ -317,15 +342,13 @@ with tab_cockpit:
     # ── Regime banner ─────────────────────────────────────────────────────────
     clr  = REGIME_COLOR[regime]
     disp = REGIME_DISPLAY[regime]
-    pnr_str  = f"{pnr_t:.1f} h" if pnr_t is not None else "Not reached"
-    diw_str  = f"{diw_min} min" if diw_min < 9000 else "> 99 h"
     prog_pct = int((tick / (TOTAL_STEPS - 1)) * 100)
     t_label  = f"t = {t_now:.1f} h / 24 h  ({prog_pct}%)"
 
     st.markdown(f"""
     <div style="background:linear-gradient(135deg,{clr}cc,{clr}66);
                 padding:12px 20px;border-radius:14px;color:white;
-                margin-bottom:18px;display:flex;align-items:center;gap:18px;">
+                margin-bottom:18px;display:flex;align-items:center;gap:18px;border-bottom:3px solid {clr};">
         <div style="font-size:2rem;">{REGIME_ICON[regime]}</div>
         <div style="flex:1;">
             <div style="font-weight:700;font-size:1.05rem;">
@@ -335,6 +358,7 @@ with tab_cockpit:
                 </span>
             </div>
             <div style="font-size:0.82rem;opacity:0.9;margin-top:2px;">
+                <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{clr};box-shadow:0 0 8px {clr};margin-right:6px;"></span>
                 {t_label} &nbsp;|&nbsp; PNR: {pnr_str} &nbsp;|&nbsp; DIW: {diw_str}
             </div>
         </div>
@@ -354,8 +378,9 @@ with tab_cockpit:
     with k2: st.metric("RQ",        f"{RQ_now:.3f}")
     with k3: st.metric("OUR",       f"{OUR_now:.3f} g/L/h")
     with k4: st.metric("RPM",       f"{RPM_now:.0f}")
-    with k5: st.metric("Recovery",  f"{R_now*100:.1f}%")
+    with k5: st.metric("Recovery",  recov_str)
     with k6: st.metric("DIW",       diw_str)
+
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -406,12 +431,12 @@ with tab_cockpit:
             height=340,
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0,
                         font=dict(color="#cbd5e1"), bgcolor="rgba(0,0,0,0)"),
-            xaxis=dict(title="Batch time (h)", color="#94a3b8", gridcolor="#1e293b",
+            xaxis=dict(title=dict(text="Batch time (h)", standoff=8), color="#94a3b8", gridcolor="#1e293b",
                        range=[0, 24]),
-            yaxis=dict(title="DO (mg/L)", color="#38bdf8", gridcolor="#1e293b"),
-            yaxis2=dict(title="RQ / R(t) %", overlaying="y", side="right",
+            yaxis=dict(title=dict(text="DO (mg/L)", standoff=10), color="#38bdf8", gridcolor="#1e293b"),
+            yaxis2=dict(title=dict(text="RQ / R(t) %", standoff=14), overlaying="y", side="right",
                         color="#fb923c", gridcolor="#1e293b"),
-            margin=dict(l=10, r=10, t=50, b=10),
+            margin=dict(l=54, r=64, t=50, b=25),
         )
         st.plotly_chart(fig, use_container_width=True, key="do_rq_chart")
 
@@ -436,12 +461,13 @@ with tab_cockpit:
             height=220,
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0,
                         font=dict(color="#cbd5e1"), bgcolor="rgba(0,0,0,0)"),
-            xaxis=dict(title="Batch time (h)", color="#94a3b8", gridcolor="#1e293b",
+            xaxis=dict(title=dict(text="Batch time (h)", standoff=8), color="#94a3b8", gridcolor="#1e293b",
                        range=[0, 24]),
-            yaxis=dict(title="g/(L·h)", color="#94a3b8", gridcolor="#1e293b"),
-            margin=dict(l=10, r=10, t=45, b=10),
+            yaxis=dict(title=dict(text="g/(L·h)", standoff=10), color="#94a3b8", gridcolor="#1e293b"),
+            margin=dict(l=54, r=64, t=45, b=25),
         )
         st.plotly_chart(fig2, use_container_width=True, key="our_cer_chart")
+
 
     with right_col:
         # ── ML regime probability bars ────────────────────────────────────────

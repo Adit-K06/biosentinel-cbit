@@ -1,27 +1,41 @@
 # Byte-compiled / cache
 __pycache__/
 *.py[cod]
+*$py.class
 *.pyo
+
+# Testing and coverage
+.pytest_cache/
+.coverage
+htmlcov/
 
 # Environments
 .env
+.env.local
 venv/
 env/
 .venv/
+ENV/
 
-# Model artifacts (regenerate instead of committing large binaries)
-ml_core/models/*.pkl
-ml_core/models/*.txt
-!ml_core/models/.gitkeep
+# Logs
+*.log
+logs/
 
-# Data (keep small reference CSVs, not huge generated logs)
+# Data (keep reference sheets, ignore large generated batch logs)
 data/synthetic/*.csv
 !data/synthetic/.gitkeep
 
-# OS / editor
+# Temporary scratch and subagent artifacts
+scratch/
+.system_generated/
+
+# OS / editor artifacts
 .DS_Store
+Thumbs.db
 .vscode/
 .idea/
+*.swp
+*.swo
 
 # Jupyter
 .ipynb_checkpoints/

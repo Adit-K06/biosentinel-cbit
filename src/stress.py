@@ -138,7 +138,9 @@ def compute_stress(
         # HACKATHON IMPLEMENTATION ASSUMPTION.
         pH_stress = np.zeros_like(CL_arr)
 
-    # Oxygen-deviation contribution — only penalise below C_crit
+    # Oxygen-deviation contribution — only penalise when DO drops BELOW C_crit.
+    # When DO >= C_crit the reactor is well-oxygenated → zero O2 stress.
+    # Using np.maximum(C_crit - CL, 0) gives a one-sided (downward) penalty.
     DO_stress = k_O2 * np.abs(C_crit - CL_arr)
 
     lambda_t = pH_stress + DO_stress
