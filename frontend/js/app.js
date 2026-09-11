@@ -5,15 +5,26 @@
 
 // ── State ─────────────────────────────────────────────────────────────────────
 const S = {
-  regime:    "Healthy",
-  streaming: false,
-  paused:    false,
-  finished:  false,
-  source:    null,      // EventSource
-  lastData:  null,      // last SSE point
-  chartsReady: false,
-  currentIdx: 0,
+  regime:       "Healthy",
+  streaming:    false,
+  paused:       false,
+  finished:     false,
+  source:       null,      // EventSource
+  timer:        null,      // Client simulation clock
+  cachedPoints: {},        // regime -> points array
+  lastData:     null,      // last point
+  chartsReady:  false,
+  currentIdx:   0,
 };
+
+async function apiFetch(path, options = {}) {
+  const clean = path.startsWith("/") ? path : `/${path}`;
+  try {
+    const res = await fetch(`/api${clean}`, options);
+    if (res.ok) return res;
+  } catch (e) {}
+  return fetch(clean, options);
+}
 
 // Plotly dark template shared across all charts
 const PLOTLY_TMPL = {
@@ -85,13 +96,15 @@ function togglePlay() {
   }
   if (S.paused) {
     S.paused = false;
+    S.streaming = true;
     if (btn) btn.textContent = "⏸ Pause";
     startStream(S.currentIdx + 1);
   } else {
     S.paused = true;
-    if (btn) btn.textContent = "▶ Play";
-    if (S.source) { S.source.close(); S.source = null; }
     S.streaming = false;
+    if (btn) btn.textContent = "▶ Resume";
+    if (S.source) { S.source.close(); S.source = null; }
+    if (S.timer) { clearInterval(S.timer); S.timer = null; }
   }
 }
 
@@ -132,6 +145,7 @@ function resetStream() {
 
 function stopStream(full=true) {
   if (S.source) { S.source.close(); S.source = null; }
+  if (S.timer) { clearInterval(S.timer); S.timer = null; }
   S.streaming = false;
   if (full) {
     S.lastData = null;
@@ -141,8 +155,91 @@ function stopStream(full=true) {
   }
 }
 
+function applyPoint(d) {
+  S.lastData = d;
+  S.currentIdx = d.idx;
+
+  updateKPIs(d);
+  updateBanner(S.regime, d);
+  extendCharts(d);
+  if (d.probs) updateProbs(d.probs, d.pred);
+  updateSensorDetail(d);
+  updateActuator(d.pred || S.regime);
+
+  // Load counterfactual once
+  if (d.idx === 60) loadCounterfactual();
+
+  // Progress
+  const pct = Math.round((d.idx / (d.total - 1)) * 100);
+  const pbar = document.getElementById("progress-bar");
+  if (pbar) pbar.style.width = Math.min(pct, 100) + "%";
+
+  // Stop at 24 hrs: DO NOT restart timer, stop it there!
+  if (d.idx >= d.total - 1 || d.t >= 24.0) {
+    if (S.source) { S.source.close(); S.source = null; }
+    if (S.timer) { clearInterval(S.timer); S.timer = null; }
+    S.streaming = false;
+    S.paused = false;
+    S.finished = true;
+    const timeEl = document.getElementById("banner-time");
+    if (timeEl) timeEl.textContent = "t = 24.00 h";
+    if (pbar) pbar.style.width = "100%";
+    const btn = document.getElementById("btn-play");
+    if (btn) btn.textContent = "↩ Replay";
+  }
+}
+
+function playFromPoints(points, startIdx) {
+  if (S.timer) { clearInterval(S.timer); S.timer = null; }
+  let curr = Math.max(0, Math.min(startIdx, points.length - 1));
+
+  S.timer = setInterval(() => {
+    if (S.paused || !S.streaming) {
+      clearInterval(S.timer);
+      S.timer = null;
+      return;
+    }
+    if (curr >= points.length) {
+      clearInterval(S.timer);
+      S.timer = null;
+      return;
+    }
+    applyPoint(points[curr]);
+    curr++;
+  }, 48); // ~21 pts/sec -> smooth 24h simulation batch
+}
+
+function fallbackToSSE(startIdx) {
+  const url = `/api/stream/${S.regime}?start_idx=${startIdx}`;
+  const es = new EventSource(url);
+  S.source = es;
+
+  es.onmessage = (e) => {
+    try {
+      const d = JSON.parse(e.data);
+      applyPoint(d);
+    } catch(err) {
+      console.error(err);
+    }
+  };
+
+  es.onerror = () => {
+    if (S.finished || (S.lastData && S.lastData.idx >= S.lastData.total - 1)) {
+      if (S.source) { S.source.close(); S.source = null; }
+      S.streaming = false;
+      return;
+    }
+    if (S.paused) {
+      if (S.source) { S.source.close(); S.source = null; }
+      return;
+    }
+    S.streaming = false;
+  };
+}
+
 function startStream(startIdx = 0) {
   if (S.source) { S.source.close(); S.source = null; }
+  if (S.timer) { clearInterval(S.timer); S.timer = null; }
   if (!S.chartsReady) initCharts();
 
   S.finished = false;
@@ -151,55 +248,28 @@ function startStream(startIdx = 0) {
   const btn = document.getElementById("btn-play");
   if (btn) btn.textContent = "⏸ Pause";
 
-  const url = `/api/stream/${S.regime}?start_idx=${startIdx}`;
-  const es  = new EventSource(url);
-  S.source  = es;
+  // 1. If points already cached, play immediately (0ms latency!)
+  if (S.cachedPoints[S.regime] && S.cachedPoints[S.regime].length > 0) {
+    playFromPoints(S.cachedPoints[S.regime], startIdx);
+    return;
+  }
 
-  es.onmessage = (e) => {
-    const d = JSON.parse(e.data);
-    S.lastData = d;
-    S.currentIdx = d.idx;
-
-    updateKPIs(d);
-    updateBanner(S.regime, d);
-    extendCharts(d);
-    if (d.probs) updateProbs(d.probs, d.pred);
-    updateSensorDetail(d);
-    updateActuator(d.pred || S.regime);
-
-    // Load counterfactual once (after a few points)
-    if (d.idx === 60) loadCounterfactual();
-
-    // Progress
-    const pct = Math.round((d.idx / (d.total - 1)) * 100);
-    document.getElementById("progress-bar").style.width = Math.min(pct, 100) + "%";
-
-    // Stop at 24 hrs: DO NOT restart timer, stop it there!
-    if (d.idx >= d.total - 1 || d.t >= 24.0) {
-      if (S.source) { S.source.close(); S.source = null; }
-      S.streaming = false;
-      S.paused = false;
-      S.finished = true;
-      document.getElementById("banner-time").textContent = "t = 24.00 h";
-      document.getElementById("progress-bar").style.width = "100%";
-      if (btn) btn.textContent = "↩ Replay";
-    }
-  };
-
-  es.onerror = () => {
-    // If finished, do NOT attempt to reconnect
-    if (S.finished || (S.lastData && S.lastData.idx >= S.lastData.total - 1)) {
-      if (S.source) { S.source.close(); S.source = null; }
-      S.streaming = false;
-      return;
-    }
-    // If paused, keep connection closed
-    if (S.paused) {
-      if (S.source) { S.source.close(); S.source = null; }
-      return;
-    }
-    S.streaming = false;
-  };
+  // 2. Fetch full simulation points via fast batch JSON endpoint
+  apiFetch(`/data/${S.regime}`)
+    .then(r => r.json())
+    .then(data => {
+      if (data && data.points && data.points.length > 0) {
+        S.cachedPoints[S.regime] = data.points;
+        if (S.streaming && !S.paused) {
+          playFromPoints(data.points, startIdx);
+        }
+      } else {
+        fallbackToSSE(startIdx);
+      }
+    })
+    .catch(() => {
+      fallbackToSSE(startIdx);
+    });
 }
 
 
@@ -507,7 +577,7 @@ async function loadCounterfactual() {
   if (!tbody) return;
 
   try {
-    const res  = await fetch(`/api/counterfactual/${S.regime}`);
+    const res  = await apiFetch(`/counterfactual/${S.regime}`);
     const data = await res.json();
     loading.classList.add("hidden");
     table.classList.remove("hidden");
@@ -657,7 +727,7 @@ async function getExplanation() {
   };
 
   try {
-    const res  = await fetch("/api/explain", {
+    const res  = await apiFetch("/explain", {
       method: "POST",
       headers: {"Content-Type":"application/json"},
       body: JSON.stringify(body),
@@ -677,7 +747,7 @@ let _metricsLoaded = false;
 async function loadMetrics() {
   if (_metricsLoaded) return;
   try {
-    const res  = await fetch("/api/metrics");
+    const res  = await apiFetch("/metrics");
     const meta = await res.json();
     _metricsLoaded = true;
     renderF1Chart(meta);

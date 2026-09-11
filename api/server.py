@@ -232,6 +232,59 @@ async def pitch_pdf():
 
 
 
+@app.get("/data/{regime}")
+@app.get("/api/data/{regime}")
+async def get_regime_data_points(regime: str):
+    if regime not in REGIMES:
+        raise HTTPException(404, f"Unknown regime: {regime}")
+    data = _get_regime_data(regime)
+    df = data["df"]
+    df_disp = data.get("df_disp", df)
+    lam_arr = data["lam"]
+    R_arr = data["R"]
+    pnr_t = data["pnr_t"]
+    win_preds = data["win_preds"]
+
+    default_probs = {k: (1.0 if k == regime else 0.0) for k in REGIMES}
+    points = []
+    for idx in range(len(df)):
+        row = df_disp.iloc[idx]
+        t_now = float(row["timestamp"])
+        R_now = float(R_arr[idx])
+        lam_now = float(lam_arr[idx])
+        w_key = max(60, (idx // 60) * 60)
+        pd_data = win_preds.get(w_key, {"probs": default_probs, "pred": regime})
+
+        if regime == "Contamination" and t_now >= 5.0:
+            R_now = 0.0
+            diw_min = 0
+        else:
+            diw_h = estimate_diw(t_now, R_now, lam_now) if lam_now > 1e-6 else 99.0
+            diw_min = min(int(diw_h * 60), 999)
+
+        points.append({
+            "idx": idx,
+            "total": len(df),
+            "t": round(t_now, 3),
+            "DO": round(float(row["DO"]) * 1000, 2),
+            "RQ": round(float(row["RQ"]), 3),
+            "OUR": round(float(row["OUR"]), 4),
+            "CER": round(float(row["CER"]), 4),
+            "X": round(float(row["X"]), 3),
+            "S": round(float(row["S"]), 3),
+            "RPM": round(float(row["RPM"]), 1),
+            "P": round(float(row["pressure"]), 3),
+            "R": round(R_now * 100, 1),
+            "lam": round(lam_now, 5),
+            "diw": diw_min,
+            "probs": {k: round(v, 4) for k, v in pd_data["probs"].items()},
+            "pred": pd_data["pred"],
+            "pnr_t": round(pnr_t, 2) if pnr_t else None,
+        })
+    return {"regime": regime, "total": len(points), "points": points}
+
+
+@app.get("/stream/{regime}")
 @app.get("/api/stream/{regime}")
 async def stream(regime: str, request: Request, start_idx: int = 0):
     if regime not in REGIMES:
@@ -301,6 +354,7 @@ async def stream(regime: str, request: Request, start_idx: int = 0):
     )
 
 
+@app.get("/counterfactual/{regime}")
 @app.get("/api/counterfactual/{regime}")
 async def counterfactual(regime: str):
     if regime not in REGIMES:
@@ -399,6 +453,7 @@ def clean_llm_text(t: str) -> str:
     return t.strip()
 
 
+@app.post("/explain")
 @app.post("/api/explain")
 async def explain(req: ExplainReq):
     key = req.key.strip() or os.environ.get("GEMINI_API_KEY", "")
@@ -492,6 +547,7 @@ FORMATTING REQUIREMENTS (CRITICAL):
     return {"text": clean_llm_text(analysis), "model": "BioSentinel Expert Engine", "source": "Expert System"}
 
 
+@app.get("/metrics")
 @app.get("/api/metrics")
 async def metrics():
     meta_path = _ROOT / "models" / "training_metadata.json"
