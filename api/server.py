@@ -198,13 +198,18 @@ def _get_model():
     return _cache.get("model"), _cache.get("feat", []), _cache.get("cls", REGIMES)
 
 def _get_regime_data(regime: str) -> dict:
-    """Return pre-computed data for a regime, computing on-the-fly if cache miss."""
+    """Return pre-computed data for a regime, warming cache if not already done."""
+    if regime not in _cache or "df" not in _cache.get(regime, {}):
+        _warm_cache()
     if regime in _cache:
         return _cache[regime]
-    # Fallback: compute synchronously (should not happen after warmup)
-    df = _sim(regime)
+    # Fallback safety guard
+    df = _sim(regime).sort_values(by="timestamp").drop_duplicates(subset=["timestamp"]).reset_index(drop=True)
     lam_arr = compute_regime_stress(regime, df)
     R_arr   = compute_recoverability(df["timestamp"].values, lam_arr)
+    if regime == "Contamination":
+        t_on = REGIME_ONSET["Contamination"].get("t_onset", 5.0)
+        R_arr = np.where(df["timestamp"].values >= t_on, 0.0, R_arr)
     pnr_t, _ = estimate_pnr(df["timestamp"].values, R_arr, R_pnr=0.10)
     df_disp = df.copy()
     for col in ["DO", "RQ", "OUR", "CER", "X", "S", "pressure", "RPM"]:

@@ -1,0 +1,15 @@
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+tests/
+.git/
+.streamlit/
+app.py
+generate_pitch_pdf.py
+data/synthetic/
+.coverage
+htmlcov/
+*.log
