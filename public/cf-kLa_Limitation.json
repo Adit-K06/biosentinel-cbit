@@ -1,0 +1,30 @@
+[
+  {
+    "rank": 1,
+    "label": "Combined (+RPM & -Feed)",
+    "ending_R": 80.2,
+    "gain": 1.9,
+    "pnr": false
+  },
+  {
+    "rank": 2,
+    "label": "+150 RPM Agitation",
+    "ending_R": 80.2,
+    "gain": 1.9,
+    "pnr": false
+  },
+  {
+    "rank": 3,
+    "label": "-30% Feed Rate",
+    "ending_R": 78.3,
+    "gain": 0.0,
+    "pnr": false
+  },
+  {
+    "rank": 4,
+    "label": "No Action (baseline)",
+    "ending_R": 78.3,
+    "gain": 0.0,
+    "pnr": false
+  }
+]

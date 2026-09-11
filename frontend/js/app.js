@@ -255,7 +255,7 @@ function startStream(startIdx = 0) {
   }
 
   // 2. Fetch pre-computed simulation points from Edge CDN (instant ~5ms), fallback to API
-  fetch(`/data/${S.regime}.json`)
+  fetch(`/sim-${S.regime}.json`)
     .then(r => {
       if (!r.ok) return apiFetch(`/data/${S.regime}`).then(res => res.json());
       return r.json();
@@ -582,7 +582,7 @@ async function loadCounterfactual() {
   try {
     let data;
     try {
-      const resStatic = await fetch(`/data/counterfactual_${S.regime}.json`);
+      const resStatic = await fetch(`/cf-${S.regime}.json`);
       if (resStatic.ok) data = await resStatic.json();
     } catch (e) {}
 
@@ -760,7 +760,7 @@ async function loadMetrics() {
   try {
     let meta;
     try {
-      const resStatic = await fetch("/data/metrics.json");
+      const resStatic = await fetch("/metrics.json");
       if (resStatic.ok) meta = await resStatic.json();
     } catch (e) {}
 
