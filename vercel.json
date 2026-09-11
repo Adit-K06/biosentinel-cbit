@@ -1,11 +1,5 @@
 {
   "version": 2,
-  "functions": {
-    "api/index.py": {
-      "includeFiles": "{models/**,src/**}",
-      "maxDuration": 60
-    }
-  },
   "rewrites": [
     {
       "source": "/api/(.*)",
