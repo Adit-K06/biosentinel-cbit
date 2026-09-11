@@ -108,58 +108,50 @@ def compute_regime_stress(regime: str, df: pd.DataFrame) -> np.ndarray:
     return np.where(post_fault, lam, 0.0)
 
 
-# ── Warm cache: pre-compute everything at startup ─────────────────────────────
+# ── On-demand simulation cache ───────────────────────────────────────────────
 _cache: dict = {}
 
-def _warm_cache():
-    """
-    Run all four regime simulations + ML predictions at startup.
-    This means the first browser request streams immediately with no delay.
-    """
-    print("[BioSentinel] Warming cache — running all 4 regime simulations…")
 
-    # Load model once
-    try:
-        m, f, c = load_model()
-        _cache.update(model=m, feat=f, cls=c)
-    except FileNotFoundError:
-        _cache.update(model=None, feat=[], cls=REGIMES)
+def _init_model():
+    """Load model once at startup (fast ~5ms)."""
+    if "model" not in _cache:
+        try:
+            m, f, c = load_model()
+            _cache.update(model=m, feat=f, cls=c)
+        except Exception as exc:
+            print(f"[BioSentinel] Model load notice: {exc}")
+            _cache.update(model=None, feat=[], cls=REGIMES)
 
-    model, feat_cols, cls_labels = _cache["model"], _cache["feat"], _cache["cls"]
 
-    # Pre-compute healthy baseline for ML feature normalisation
-    df_healthy = _sim("Healthy")
-    baseline = compute_healthy_baseline(df_healthy)
-    _cache["baseline"] = baseline
+def _compute_regime(regime: str) -> dict:
+    """Compute simulation and predictions for a single regime on demand."""
+    _init_model()
+    df = _sim(regime)
+    df = df.sort_values(by="timestamp").drop_duplicates(subset=["timestamp"]).reset_index(drop=True)
+    lam_arr = compute_regime_stress(regime, df)
+    R_arr   = compute_recoverability(df["timestamp"].values, lam_arr)
 
-    # Pre-compute per-regime: simulation + stress + R + ML predictions
-    for regime in REGIMES:
-        df = _sim(regime)
-        # Ensure telemetry is strictly sorted by timestamp and duplicate-free
-        df = df.sort_values(by="timestamp").drop_duplicates(subset=["timestamp"]).reset_index(drop=True)
-        lam_arr = compute_regime_stress(regime, df)
-        R_arr   = compute_recoverability(df["timestamp"].values, lam_arr)
+    if regime == "Contamination":
+        t_on = REGIME_ONSET["Contamination"].get("t_onset", 5.0)
+        post_onset = df["timestamp"].values >= t_on
+        R_arr = np.where(post_onset, 0.0, R_arr)
+        pnr_t = float(t_on)
+    else:
+        pnr_t, _ = estimate_pnr(df["timestamp"].values, R_arr, R_pnr=0.10)
 
-        if regime == "Contamination":
-            # Biological constraint: microbial contamination cannot be cured by physical actuators.
-            # Post-onset (t >= 5.0h), recoverability collapses to 0.0% (irreversible).
-            t_on = REGIME_ONSET["Contamination"].get("t_onset", 5.0)
-            post_onset = df["timestamp"].values >= t_on
-            R_arr = np.where(post_onset, 0.0, R_arr)
-            pnr_t = float(t_on)
-        else:
-            pnr_t, _ = estimate_pnr(df["timestamp"].values, R_arr, R_pnr=0.10)
+    df_disp = df.copy()
+    for col in ["DO", "RQ", "OUR", "CER", "X", "S", "pressure", "RPM"]:
+        if col in df_disp.columns:
+            df_disp[col] = _smooth_series(df_disp[col].values, w=11)
 
-        # Pre-filter display columns so numbers and charts are smooth like a real industrial SCADA
-        df_disp = df.copy()
-        for col in ["DO", "RQ", "OUR", "CER", "X", "S", "pressure", "RPM"]:
-            if col in df_disp.columns:
-                df_disp[col] = _smooth_series(df_disp[col].values, w=11)
-
-        # Windowed ML predictions at every 60-pt checkpoint
-        win_preds = {}
-        if model is not None:
-            do_mean, do_std = baseline
+    win_preds = {}
+    model, feat_cols, cls_labels = _get_model()
+    if model is not None:
+        try:
+            if "baseline" not in _cache:
+                df_healthy = df if regime == "Healthy" else _sim("Healthy")
+                _cache["baseline"] = compute_healthy_baseline(df_healthy)
+            do_mean, do_std = _cache["baseline"]
             for w in range(60, len(df) + 1, 60):
                 try:
                     out = predict_batch(df.iloc[:w], model, feat_cols, cls_labels,
@@ -167,29 +159,25 @@ def _warm_cache():
                     win_preds[w] = {"probs": out["probabilities"], "pred": out["predicted_class"]}
                 except Exception:
                     pass
+        except Exception:
+            pass
 
-        _cache[regime] = {
-            "df":        df,
-            "df_disp":   df_disp,
-            "lam":       lam_arr,
-            "R":         R_arr,
-            "pnr_t":     pnr_t,
-            "win_preds": win_preds,
-        }
-        print(f"[BioSentinel]   {regime}: R range [{R_arr.min()*100:.1f}%, {R_arr.max()*100:.1f}%]  "
-              f"lam max={lam_arr.max():.4f}  pts={len(df)}")
-
-    print("[BioSentinel] Cache warm — ready to stream!")
-
+    data = {
+        "df":        df,
+        "df_disp":   df_disp,
+        "lam":       lam_arr,
+        "R":         R_arr,
+        "pnr_t":     pnr_t,
+        "win_preds": win_preds,
+    }
+    _cache[regime] = data
+    return data
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Warm cache in background thread so server starts accepting connections immediately
-    try:
-        await run_in_threadpool(_warm_cache)
-    except Exception as exc:
-        print(f"[BioSentinel] Background warmup notice: {exc}")
+    # Fast non-blocking model load on startup (<10ms)
+    await run_in_threadpool(_init_model)
     yield
 
 
@@ -213,26 +201,11 @@ def _get_model():
     return _cache.get("model"), _cache.get("feat", []), _cache.get("cls", REGIMES)
 
 def _get_regime_data(regime: str) -> dict:
-    """Return pre-computed data for a regime, warming cache if not already done."""
-    if regime not in _cache or "df" not in _cache.get(regime, {}):
-        _warm_cache()
-    if regime in _cache:
+    """Return pre-computed data for a regime, computing lazily on-the-fly."""
+    if regime in _cache and "df" in _cache[regime]:
         return _cache[regime]
-    # Fallback safety guard
-    df = _sim(regime).sort_values(by="timestamp").drop_duplicates(subset=["timestamp"]).reset_index(drop=True)
-    lam_arr = compute_regime_stress(regime, df)
-    R_arr   = compute_recoverability(df["timestamp"].values, lam_arr)
-    if regime == "Contamination":
-        t_on = REGIME_ONSET["Contamination"].get("t_onset", 5.0)
-        R_arr = np.where(df["timestamp"].values >= t_on, 0.0, R_arr)
-    pnr_t, _ = estimate_pnr(df["timestamp"].values, R_arr, R_pnr=0.10)
-    df_disp = df.copy()
-    for col in ["DO", "RQ", "OUR", "CER", "X", "S", "pressure", "RPM"]:
-        if col in df_disp.columns:
-            df_disp[col] = _smooth_series(df_disp[col].values, w=11)
-    data = {"df": df, "df_disp": df_disp, "lam": lam_arr, "R": R_arr, "pnr_t": pnr_t, "win_preds": {}}
-    _cache[regime] = data
-    return data
+    return _compute_regime(regime)
+
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 

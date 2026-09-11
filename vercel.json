@@ -2,29 +2,21 @@
   "version": 2,
   "functions": {
     "api/index.py": {
-      "includeFiles": "{frontend/**,models/**,src/**,BioSentinel_Pitch_Summary.pdf}",
+      "includeFiles": "{models/**,src/**}",
       "maxDuration": 60
     }
   },
   "rewrites": [
     {
-      "source": "/static/(.*)",
-      "destination": "/frontend/$1"
-    },
-    {
-      "source": "/BioSentinel_Pitch_Summary.pdf",
-      "destination": "/BioSentinel_Pitch_Summary.pdf"
-    },
-    {
-      "source": "/",
-      "destination": "/frontend/index.html"
-    },
-    {
       "source": "/api/(.*)",
       "destination": "/api/index.py"
     },
     {
-      "source": "/(.*)",
+      "source": "/docs",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/openapi.json",
       "destination": "/api/index.py"
     }
   ]

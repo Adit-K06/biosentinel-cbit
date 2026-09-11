@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>BioSentinel 2.0 — AI Bioreactor Monitor</title>
+  <meta name="description" content="Real-time AI-powered bioreactor fault detection, recoverability analysis, and counterfactual intervention engine."/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css"/>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" defer
+    onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}]})"></script>
+  <script src="https://cdn.plot.ly/plotly-2.26.0.min.js" defer></script>
+  <link rel="stylesheet" href="/static/css/style.css"/>
+</head>
+<body>
+
+<!-- ═══ HEADER ═══════════════════════════════════════════════════════════════ -->
+<header id="header">
+  <div class="header-left">
+    <span class="logo-icon">🧬</span>
+    <div>
+      <div class="logo-title">BioSentinel <span class="accent">2.0</span></div>
+      <div class="logo-sub">AI Bioreactor Monitor · Digital Twin</div>
+    </div>
+  </div>
+
+  <nav class="tab-nav">
+    <button class="tab-btn active" data-tab="monitor" onclick="switchTab('monitor')">📡 Monitor</button>
+    <button class="tab-btn" data-tab="insights" onclick="switchTab('insights')">🤖 AI Insights</button>
+    <button class="tab-btn" data-tab="reference" onclick="switchTab('reference')">📚 Reference</button>
+  </nav>
+
+  <div class="header-right">
+    <input type="password" id="gemini-key" placeholder="🔑 Gemini API Key" class="api-key-input"
+           title="Enter your Gemini API key for AI explanations"/>
+  </div>
+
+</header>
+
+<!-- ═══ MAIN ══════════════════════════════════════════════════════════════════ -->
+<main>
+
+<!-- ─── TAB 1: MONITOR ─────────────────────────────────────────────────────── -->
+<section id="tab-monitor" class="tab-section active">
+
+  <!-- Scenario selector -->
+  <div class="scenario-bar">
+    <span class="scenario-label">Scenario:</span>
+    <button class="scenario-btn active" data-regime="Healthy" onclick="selectRegime(this,'Healthy')">✅ Healthy</button>
+    <button class="scenario-btn" data-regime="kLa_Limitation" onclick="selectRegime(this,'kLa_Limitation')">⚠️ kLa Limitation</button>
+    <button class="scenario-btn" data-regime="Substrate_Overfeeding" onclick="selectRegime(this,'Substrate_Overfeeding')">🔥 Substrate Overfeed</button>
+    <button class="scenario-btn" data-regime="Contamination" onclick="selectRegime(this,'Contamination')">☣️ Contamination</button>
+    <button id="btn-play" class="ctrl-btn" onclick="togglePlay()">⏸ Pause</button>
+    <button class="ctrl-btn" onclick="resetStream()">↩ Reset</button>
+  </div>
+
+  <!-- Status banner -->
+  <div id="banner" class="status-banner healthy">
+    <div class="banner-left">
+      <span id="banner-icon" class="banner-icon">✅</span>
+      <div>
+        <div id="banner-regime" class="banner-regime">Healthy</div>
+        <div id="banner-sub" class="banner-sub">ML: Healthy · PNR: Not reached · DIW: Safe</div>
+      </div>
+    </div>
+    <div class="banner-right">
+      <div id="live-dot" class="live-dot healthy"></div>
+      <span id="banner-time">t = 0.0 h</span>
+    </div>
+  </div>
+
+  <!-- Progress -->
+  <div class="progress-bar-wrap">
+    <div id="progress-bar" class="progress-bar healthy" style="width:0%"></div>
+  </div>
+
+  <!-- KPI Row -->
+  <div class="kpi-row">
+    <div class="kpi-card">
+      <div class="kpi-label">Dissolved O₂</div>
+      <div class="kpi-value" id="kpi-do">—</div>
+      <div class="kpi-unit">mg/L</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">RQ</div>
+      <div class="kpi-value" id="kpi-rq">—</div>
+      <div class="kpi-unit">CER/OUR</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">OUR</div>
+      <div class="kpi-value" id="kpi-our">—</div>
+      <div class="kpi-unit">g/L·h</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Recovery R(t)</div>
+      <div class="kpi-value" id="kpi-r">—</div>
+      <div class="kpi-unit" id="kpi-unit-r">%</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">DIW</div>
+      <div class="kpi-value" id="kpi-diw">—</div>
+      <div class="kpi-unit" id="kpi-unit-diw">min to PNR</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Biomass X</div>
+      <div class="kpi-value" id="kpi-x">—</div>
+      <div class="kpi-unit">g/L</div>
+    </div>
+  </div>
+
+
+  <!-- Charts row 1 -->
+  <div class="chart-grid-2">
+    <div class="card">
+      <div class="card-title">Dissolved O₂ &amp; RQ <span class="card-note">(live ODE output)</span></div>
+      <div id="chart-do-rq" class="chart-box"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">OUR &amp; CER <span class="card-note">(transfer rates)</span></div>
+      <div id="chart-gas" class="chart-box"></div>
+    </div>
+  </div>
+
+  <!-- Charts row 2 -->
+  <div class="chart-grid-2">
+    <div class="card">
+      <div class="card-title">Biomass &amp; Substrate</div>
+      <div id="chart-bio" class="chart-box"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">Recoverability R(t) &amp; Stress λ(t)</div>
+      <div id="chart-recovery" class="chart-box"></div>
+    </div>
+  </div>
+
+</section>
+
+<!-- ─── TAB 2: AI INSIGHTS ─────────────────────────────────────────────────── -->
+<section id="tab-insights" class="tab-section">
+
+  <div class="insights-grid">
+
+    <!-- Left: Regime probs + Gemini -->
+    <div>
+      <div class="card">
+        <div class="card-title">ML Regime Probabilities</div>
+        <div class="card-note" style="margin-bottom:12px;">LightGBM classifier · 184 features · Macro F1 94.6%</div>
+        <div id="prob-bars"></div>
+        <div style="margin-top:10px;font-size:0.8rem;color:var(--text-muted);">
+          Prediction updated every ~4 s of stream. Pre-onset label denoising applied during training.
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px;">
+        <div class="card-title">🤖 Gemini AI Explanation</div>
+        <div class="card-note" style="margin-bottom:12px;">Powered by Gemini 1.5 Flash · expert bioprocess prompt</div>
+        <button class="primary-btn" onclick="getExplanation()" id="btn-explain">Get AI Explanation</button>
+        <div id="explain-box" class="explain-box hidden">
+          <div id="explain-text" class="explain-text"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right: Counterfactual + Actuator -->
+    <div>
+      <div class="card">
+        <div class="card-title">Counterfactual Interventions</div>
+        <div class="card-note" style="margin-bottom:12px;">Ranked by ending R(t) from ODE rollout · horizon = 1.5 h</div>
+        <div id="cf-loading" class="loading-text">Loading...</div>
+        <table id="cf-table" class="data-table hidden">
+          <thead><tr><th>Rank</th><th>Intervention</th><th>Ending R(t)</th><th>vs No-Action</th><th>PNR?</th></tr></thead>
+          <tbody id="cf-tbody"></tbody>
+        </table>
+        <div id="cf-best" class="cf-best hidden"></div>
+      </div>
+
+      <div class="card" style="margin-top:16px;">
+        <div class="card-title">Virtual Actuator Status</div>
+        <div id="actuator-badge" class="actuator-badge healthy-badge">Nominal</div>
+        <div class="sensor-grid" id="sensor-detail">
+          <div class="sensor-row"><span>Pressure</span><span id="sd-p">—</span></div>
+          <div class="sensor-row"><span>OUR</span><span id="sd-our">—</span></div>
+          <div class="sensor-row"><span>CER</span><span id="sd-cer">—</span></div>
+          <div class="sensor-row"><span>RPM</span><span id="sd-rpm">—</span></div>
+          <div class="sensor-row"><span>Substrate S</span><span id="sd-s">—</span></div>
+          <div class="sensor-row"><span>Biomass X</span><span id="sd-x">—</span></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ─── TAB 3: REFERENCE ───────────────────────────────────────────────────── -->
+<section id="tab-reference" class="tab-section">
+
+  <!-- Math model -->
+  <h2 class="section-heading">Mathematical Model — Dual-Monod Digital Twin</h2>
+  <div class="formula-grid">
+
+    <div class="formula-card">
+      <div class="formula-tag growth">Growth Kinetics</div>
+      <div class="formula-name">Dual-Monod Growth Rate</div>
+      <div class="formula-math">$$\mu = \mu_{\max} \cdot \frac{S}{K_S + S} \cdot \frac{C_L}{K_O + C_L}$$</div>
+      <div class="formula-desc">Specific growth rate limited simultaneously by substrate S (g/L) and dissolved oxygen C_L (g/L). Both terms are Michaelis-Menten saturation functions.</div>
+    </div>
+
+    <div class="formula-card">
+      <div class="formula-tag balance">Mass Balance</div>
+      <div class="formula-name">DO Mass Balance (ODE)</div>
+      <div class="formula-math">$$\frac{dC_L}{dt} = k_La \cdot (C_L^* - C_L) - \text{OUR}$$</div>
+      <div class="formula-desc">k_La = volumetric O₂ mass transfer coefficient (h⁻¹). C_L* = saturation DO. OUR = oxygen uptake rate (g/L/h). Fault regimes mutate k_La or OUR.</div>
+    </div>
+
+    <div class="formula-card">
+      <div class="formula-tag rates">Transfer Rates</div>
+      <div class="formula-name">OUR &amp; CER</div>
+      <div class="formula-math">$$\text{OUR} = \left(\frac{\mu}{Y_{X/O}} + m_O\right) X$$</div>
+      <div class="formula-math">$$\text{CER} = \left(\frac{\mu}{Y_{X/C}} + m_C\right) X$$</div>
+      <div class="formula-desc">Y_XO, Y_XC = yield coefficients. m_O, m_C = maintenance coefficients. X = biomass concentration (g/L).</div>
+    </div>
+
+    <div class="formula-card">
+      <div class="formula-tag rq">Diagnostics</div>
+      <div class="formula-name">Respiratory Quotient</div>
+      <div class="formula-math">$$\text{RQ} = \frac{\text{CER}}{\text{OUR}}$$</div>
+      <div class="formula-desc">Healthy aerobic metabolism: RQ ≈ 1.0. Anaerobic overflow (kLa fault): RQ &gt; 1.0. Contamination: RQ diverges from stoichiometric baseline.</div>
+    </div>
+
+    <div class="formula-card">
+      <div class="formula-tag balance">Mass Balance</div>
+      <div class="formula-name">Biomass &amp; Substrate ODEs</div>
+      <div class="formula-math">$$\frac{dX}{dt} = (\mu - D)\,X$$</div>
+      <div class="formula-math">$$\frac{dS}{dt} = -\frac{\mu}{Y_{X/S}}\,X + D\,(S_F - S)$$</div>
+      <div class="formula-desc">D = dilution rate (h⁻¹). S_F = feed substrate concentration. Y_XS = biomass-on-substrate yield. All four ODEs integrated simultaneously via scipy.solve_ivp.</div>
+    </div>
+
+    <div class="formula-card">
+      <div class="formula-tag scaling">Intervention</div>
+      <div class="formula-name">kLa–RPM Scaling (Van't Riet)</div>
+      <div class="formula-math">$$k_La^{\,\prime} = k_La \cdot \left(\frac{\text{RPM}^{\prime}}{\text{RPM}}\right)^{0.6}$$</div>
+      <div class="formula-desc">Applied in the +150 RPM counterfactual rollout. Power-law exponent 0.6 follows the Van't Riet correlation for stirred-tank bioreactors.</div>
+    </div>
+
+    <div class="formula-card">
+      <div class="formula-tag stress">Recoverability</div>
+      <div class="formula-name">Kinetic Stress λ(t)</div>
+      <div class="formula-math">$$\lambda(t) = w_1\,(C_L - C_L^{\text{crit}})^2 + w_2\,(\text{RQ} - \text{RQ}_0)^2$$</div>
+      <div class="formula-desc">Weighted sum of squared deviations from healthy operating point. w₁, w₂ are tuned weight coefficients. Higher λ = faster recoverability loss.</div>
+    </div>
+
+    <div class="formula-card">
+      <div class="formula-tag stress">Recoverability</div>
+      <div class="formula-name">Recoverability R(t)</div>
+      <div class="formula-math">$$R(t) = \exp\!\left(-\int_0^t \lambda(\tau)\,d\tau\right)$$</div>
+      <div class="formula-desc">R(t) ∈ (0, 1]. R = 1 → fully recoverable. PNR threshold R_PNR = 0.10. Once R ≤ R_PNR the batch is economically unrecoverable.</div>
+    </div>
+
+    <div class="formula-card">
+      <div class="formula-tag diw">Decision</div>
+      <div class="formula-name">DIW — Decision Intervention Window</div>
+      <div class="formula-math">$$\text{DIW} = \frac{\ln(R_{\text{now}} / R_{\text{PNR}})}{\lambda_{\text{now}}}$$</div>
+      <div class="formula-desc">Time remaining (hours) until PNR at the current stress rate. Linear extrapolation assumption (hackathon). If λ ≈ 0 the batch is indefinitely stable.</div>
+    </div>
+
+    <div class="formula-card">
+      <div class="formula-tag diw">Economics</div>
+      <div class="formula-name">Cost of Delay</div>
+      <div class="formula-math">$$\text{CoD}(\Delta t) = V_{\text{batch}}\left(1 - R_{\text{now}}\,e^{-\lambda \Delta t}\right) - C_{\text{interv}}$$</div>
+      <div class="formula-desc">Net economic cost of waiting Δt hours before intervening. Positive CoD → act now is better. V_batch = expected batch revenue. Hackathon assumption on constants.</div>
+    </div>
+
+  </div>
+
+  <!-- Parameter table -->
+  <h2 class="section-heading" style="margin-top:32px;">Key Parameters &amp; Default Values</h2>
+  <div class="card">
+    <table class="data-table">
+      <thead><tr><th>Symbol</th><th>Name</th><th>Default Value</th><th>Units</th></tr></thead>
+      <tbody>
+        <tr><td>μ_max</td><td>Max specific growth rate</td><td>0.40</td><td>h⁻¹</td></tr>
+        <tr><td>K_S</td><td>Substrate saturation constant</td><td>0.20</td><td>g/L</td></tr>
+        <tr><td>K_O</td><td>Oxygen saturation constant</td><td>0.0002</td><td>g/L</td></tr>
+        <tr><td>Y_XS</td><td>Biomass yield on substrate</td><td>0.50</td><td>g/g</td></tr>
+        <tr><td>Y_XO</td><td>Biomass yield on oxygen</td><td>1.50</td><td>g/g</td></tr>
+        <tr><td>k_La</td><td>O₂ transfer coefficient</td><td>120</td><td>h⁻¹</td></tr>
+        <tr><td>C_L*</td><td>DO saturation</td><td>0.008</td><td>g/L</td></tr>
+        <tr><td>RPM</td><td>Agitator speed</td><td>300</td><td>rpm</td></tr>
+        <tr><td>R_PNR</td><td>Point-of-No-Return threshold</td><td>0.10</td><td>—</td></tr>
+        <tr><td>w₁</td><td>DO stress weight</td><td>1000</td><td>—</td></tr>
+        <tr><td>w₂</td><td>RQ stress weight</td><td>5</td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ML model section -->
+  <h2 class="section-heading" style="margin-top:32px;">AI/ML Model — LightGBM Regime Classifier</h2>
+  <div class="ml-info-grid">
+    <div class="card">
+      <div class="card-title">Architecture &amp; Training Setup</div>
+      <table class="data-table">
+        <tbody>
+          <tr><td>Algorithm</td><td>LightGBM GBDT (gradient boosted decision trees)</td></tr>
+          <tr><td>Objective</td><td>Multiclass softmax (4 classes)</td></tr>
+          <tr><td>Training data</td><td>100 ODE-simulated batches (25 per class, 720 pts/batch, 24 h)</td></tr>
+          <tr><td>Validation</td><td>Whole-batch group holdout — 5 batches/class, no row-level leakage</td></tr>
+          <tr><td>Features</td><td>184 physics-informed features (DO, RQ, OUR, CER, kLa_eff, CUSUM, rolling windows)</td></tr>
+          <tr><td>Key trick</td><td>Pre-onset re-labelling as Healthy to remove fault label noise</td></tr>
+          <tr><td>Class imbalance</td><td>is_unbalance = True (LightGBM internal reweighting)</td></tr>
+          <tr><td>Early stopping</td><td>50 rounds on validation log-loss</td></tr>
+          <tr><td>Learning rate</td><td>0.03</td></tr>
+          <tr><td>Max depth / leaves</td><td>8 / 127</td></tr>
+          <tr><td>Macro F1</td><td class="metric-good">94.64%</td></tr>
+          <tr><td>Accuracy</td><td class="metric-good">94.53%</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Feature Engineering Groups</div>
+      <div class="feature-group">
+        <div class="fg-label physics">Physics-derived</div>
+        <div class="fg-items">DO, RQ, OUR, CER, pressure, RPM, OD600, X, S, k_La_eff (back-calculated from DO mass balance), elapsed_t, t_onset_flag</div>
+      </div>
+      <div class="feature-group">
+        <div class="fg-label rolling">Rolling statistics</div>
+        <div class="fg-items">Rolling mean, std, slope over ~30 s / 2 min / 5 min windows for DO, RQ, OUR, CER (36 features)</div>
+      </div>
+      <div class="feature-group">
+        <div class="fg-label cusum">CUSUM residuals</div>
+        <div class="fg-items">Cumulative sum of signed deviation from healthy baseline for DO and RQ — detects persistent drift early</div>
+      </div>
+      <div class="feature-group">
+        <div class="fg-label shear">Derived indicators</div>
+        <div class="fg-items">RPM-derived shear proxy, dDO/dt (finite-difference gradient), RQ × OUR interaction, kLa_eff trend</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ML charts -->
+  <div class="chart-grid-2" style="margin-top:16px;">
+    <div class="card">
+      <div class="card-title">Per-Class Metrics</div>
+      <div id="chart-f1" class="chart-box"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">Confusion Matrix</div>
+      <div id="chart-cm" class="chart-box"></div>
+    </div>
+  </div>
+  <div class="card" style="margin-top:16px;">
+    <div class="card-title">Top-20 Feature Importances</div>
+    <div id="chart-fi" class="chart-box chart-box-tall"></div>
+  </div>
+
+  <!-- Fault regimes reference -->
+  <h2 class="section-heading" style="margin-top:32px;">Fault Regime Reference</h2>
+  <div class="regime-ref-grid">
+    <div class="regime-ref-card green">
+      <div class="rr-title">✅ Healthy</div>
+      <div class="rr-row"><b>DO:</b> Stable, 2–8 mg/L</div>
+      <div class="rr-row"><b>RQ:</b> ≈ 1.0 (aerobic stoichiometry)</div>
+      <div class="rr-row"><b>Signal:</b> All ODEs within envelope</div>
+      <div class="rr-row"><b>Action:</b> Continue monitoring</div>
+    </div>
+    <div class="regime-ref-card amber">
+      <div class="rr-title">⚠️ kLa Limitation</div>
+      <div class="rr-row"><b>Onset:</b> t = 8 h (severity 0.7)</div>
+      <div class="rr-row"><b>DO:</b> Sags post-onset</div>
+      <div class="rr-row"><b>RQ:</b> Rises (anaerobic shift)</div>
+      <div class="rr-row"><b>Action:</b> +150 RPM / ↑ airflow</div>
+    </div>
+    <div class="regime-ref-card orange">
+      <div class="rr-title">🔥 Substrate Overfeeding</div>
+      <div class="rr-row"><b>Onset:</b> t = 6 h (severity 3.0)</div>
+      <div class="rr-row"><b>DO:</b> Crashes (excess OUR demand)</div>
+      <div class="rr-row"><b>S:</b> Accumulates above normal</div>
+      <div class="rr-row"><b>Action:</b> -30% feed rate immediately</div>
+    </div>
+    <div class="regime-ref-card red">
+      <div class="rr-title">☣️ Contamination</div>
+      <div class="rr-row"><b>Onset:</b> t = 5 h (severity 0.45)</div>
+      <div class="rr-row"><b>RQ:</b> Diverges from stoichiometric</div>
+      <div class="rr-row"><b>Signal:</b> DO/CER decoupling</div>
+      <div class="rr-row"><b>Action:</b> Bleed + resterilise</div>
+    </div>
+  </div>
+
+</section>
+</main>
+
+<footer class="app-footer">
+  BioSentinel 2.0 · National Ideathon Submission ·
+  Digital Twin (scipy ODE) + LightGBM (94.6% F1) + Gemini AI · All sensor data from real physics simulation
+</footer>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>
